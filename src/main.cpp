@@ -188,7 +188,7 @@ void on_center_button() {
 void initialize() {
 	pros::lcd::initialize();
 	pros::lcd::clear();
-	pros::lcd::set_text(0, "Team 41658E");
+	pros::lcd::set_text(0, "Team 41658E: Optimus Prime");
 	pros::lcd::set_text(1, "Driver Select");
 	pros::lcd::set_text(2, "Center = Toggle");
 	update_drive_mode_ui();
