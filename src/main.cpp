@@ -92,18 +92,6 @@ static lemlib::ControllerSettings angularSettings(
 static pros::Imu imu(9);
 
 /**
- * Rotation sensor for vertical tracking wheel.
- * Port 10. Measures forward/backward movement.
- */
-static pros::Rotation vertical_encoder(10);
-
-/**
- * Rotation sensor for horizontal tracking wheel.
- * Port 11. Measures left/right lateral movement.
- */
-static pros::Rotation horizontal_encoder(11);
-
-/**
  * GPS sensor for global position tracking (optional, polled separately).
  * Port 15. Can be used for field-based positioning.
  */
@@ -113,41 +101,18 @@ static pros::Gps gps(15);
  * AI Vision sensor for object detection (optional, polled separately).
  * Port 20. Can be used for autonomous alignment and game object tracking.
  */
-static pros::Vision vision(20);
-
-/**
- * LemLib Tracking Wheel: vertical encoder (left side of robot).
- * Wheel size: 2.75 inches (NEW omniwheels)
- * Offset: -5.75 inches from tracking center (to the left)
- */
-static lemlib::TrackingWheel vertical_tracking_wheel(
-    &vertical_encoder,
-    lemlib::Omniwheel::NEW_275,
-    -5.75
-);
-
-/**
- * LemLib Tracking Wheel: horizontal encoder (back of robot).
- * Wheel size: 2.75 inches (NEW omniwheels)
- * Offset: -2 inches from tracking center (to the back)
- */
-static lemlib::TrackingWheel horizontal_tracking_wheel(
-    &horizontal_encoder,
-    lemlib::Omniwheel::NEW_275,
-    -2.0
-);
+static pros::AIVision ai_vision(20);
 
 /**
  * OdomSensors configuration for the Chassis.
- * Integrates vertical tracking wheel, horizontal tracking wheel, and IMU.
- * Ready for full 3-wheel odometry tracking.
+ * Uses the IMU for heading. GPS is available separately for global position.
  */
 static lemlib::OdomSensors sensors(
-    &vertical_tracking_wheel,      // vertical tracking wheel (left)
-    nullptr,                        // no second vertical wheel
-    &horizontal_tracking_wheel,     // horizontal tracking wheel (back)
-    nullptr,                        // no second horizontal wheel
-    &imu                            // inertial measurement unit
+	nullptr,  // no vertical tracking wheels yet
+	nullptr,  // no second vertical tracking wheel
+	nullptr,  // no horizontal tracking wheels yet
+	nullptr,  // no second horizontal tracking wheel
+	&imu      // inertial measurement unit
 );
 
 /**
@@ -177,49 +142,34 @@ static lemlib::Chassis chassis(
     &steerCurve
 );
 
-/**
- * Tracks the previous output for slew-rate limiting to smooth acceleration.
- * LemLib's slew() utility function will manage these values.
- */
-static float previous_left_output = 0.0f;
-static float previous_right_output = 0.0f;
-
-/**
- * Tuning constant: maximum change per loop cycle for smooth acceleration.
- * Decrease for smoother, slower ramps. Increase for snappier response.
- * TUNE THIS based on driver feel during testing.
- */
-constexpr float MAX_SLEW_STEP = 22.0f;
-
 // ============================================
 // SUBSYSTEM MOTORS & STATE
 // ============================================
 
 /**
- * Intake motor for roller intake.
- * Port 5. 600 RPM gearset (green, 6:1).
- * Spins in/out to collect and score game objects.
+ * Cascade lift motor.
+ * Port 7. Uses one motor for elevation.
  */
-static pros::Motor intake_motor(5);
+static pros::Motor lift_motor(7);
 
 /**
- * Cascade lift motor group.
- * Ports 6, 7, 8. All 36:1 red gearset.
- * Coordinated 3-stage cascade lift for elevation.
+ * Counter-roller intake motor.
+ * Port 5. 11W motor.
  */
-static pros::MotorGroup lift_mg({6, 7, 8});
+static pros::Motor counter_roller_motor(5);
 
 /**
- * Pneumatic claw open solenoid.
- * ADI port 'A'. Digital output to actuate claw open.
+ * Top-roller intake motor.
+ * Port 6. 11W motor.
  */
-static pros::adi::DigitalOut claw_open('A');
+static pros::Motor top_roller_motor(6);
 
 /**
- * Pneumatic claw close solenoid.
- * ADI port 'B'. Digital output to actuate claw close.
+ * Double-acting pneumatic claw.
+ * The solenoid's electrical control wire uses ADI port 'A'.
+ * Its physical A/B air ports handle extend and retract.
  */
-static pros::adi::DigitalOut claw_close('B');
+static pros::adi::Pneumatics claw_open('A', false);
 
 /**
  * Intake state: whether the intake is currently spinning.
@@ -236,18 +186,20 @@ static int claw_state = 0;
 // ============================================
 
 /**
- * Spin the intake inward to collect objects.
+ * Spin both intake rollers inward to collect objects.
  */
 void intake_spin_in() {
-	intake_motor.move(127);
+	counter_roller_motor.move(127);
+	top_roller_motor.move(127);
 	intake_active = true;
 }
 
 /**
- * Spin the intake outward to eject objects.
+ * Spin both intake rollers outward to eject objects.
  */
 void intake_spin_out() {
-	intake_motor.move(-127);
+	counter_roller_motor.move(-127);
+	top_roller_motor.move(-127);
 	intake_active = true;
 }
 
@@ -255,7 +207,8 @@ void intake_spin_out() {
  * Stop the intake motor.
  */
 void intake_stop() {
-	intake_motor.move(0);
+	counter_roller_motor.move(0);
+	top_roller_motor.move(0);
 	intake_active = false;
 }
 
@@ -278,28 +231,28 @@ void toggle_intake() {
  * Raise the cascade lift at full power.
  */
 void lift_raise() {
-	lift_mg.move(127);
+	lift_motor.move(127);
 }
 
 /**
  * Lower the cascade lift at full power.
  */
 void lift_lower() {
-	lift_mg.move(-127);
+	lift_motor.move(-127);
 }
 
 /**
  * Stop the cascade lift (coast).
  */
 void lift_stop() {
-	lift_mg.move(0);
+	lift_motor.move(0);
 }
 
 /**
  * Hold the cascade lift at current position with gentle holding power.
  */
 void lift_hold() {
-	lift_mg.move(10);
+	lift_motor.move(10);
 }
 
 // ============================================
@@ -310,8 +263,7 @@ void lift_hold() {
  * Open the claw by activating the open solenoid.
  */
 void claw_open_cmd() {
-	claw_open.set_value(true);
-	claw_close.set_value(false);
+	claw_open.extend();
 	claw_state = 0;
 }
 
@@ -319,8 +271,7 @@ void claw_open_cmd() {
  * Close the claw by activating the close solenoid.
  */
 void claw_close_cmd() {
-	claw_close.set_value(true);
-	claw_open.set_value(false);
+	claw_open.retract();
 	claw_state = 1;
 }
 
@@ -405,13 +356,12 @@ void initialize() {
 	right_mg.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
 
 	// Set brake modes for subsystems
-	intake_motor.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
-	lift_mg.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+	counter_roller_motor.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
+	top_roller_motor.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
+	lift_motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
 
-	// Calibrate odometry: reset tracking wheels and IMU
-	vertical_tracking_wheel.reset();
-	horizontal_tracking_wheel.reset();
-	imu.reset();
+	// Calibrate the IMU and start LemLib's odometry task.
+	chassis.calibrate();
 
 	// Set initial robot pose to (0, 0, 0)
 	chassis.setPose(0, 0, 0);
@@ -461,7 +411,7 @@ void autonomous() {}
  * control mode.
  *
  * This function handles:
- * - Drivetrain control (arcade/tank with curves and slew)
+ * - Drivetrain control through LemLib's arcade/tank methods and drive curves
  * - Intake control (X button toggles spin in/out)
  * - Lift control (UP/DOWN buttons, or press and hold)
  * - Claw control (A/B buttons, or L1 to toggle)
@@ -479,40 +429,16 @@ void opcontrol() {
 		// DRIVETRAIN CONTROL
 		// ====================
 
-		int left_y = master.get_analog(pros::E_CONTROLLER_ANALOG_LEFT_Y);
-		int right_y = master.get_analog(pros::E_CONTROLLER_ANALOG_RIGHT_Y);
-		int right_x = master.get_analog(pros::E_CONTROLLER_ANALOG_RIGHT_X);
-
 		if (current_drive_mode == DriveMode::ARCADE) {
-			int forward = left_y;
-			int turn = right_x;
-
-			// Apply exponential curve to forward input via throttleCurve
-			int forward_curved = throttleCurve.curve(forward);
-			// Apply exponential curve to turn input via steerCurve
-			int turn_curved = steerCurve.curve(turn);
-
-			// Calculate left and right outputs for arcade drive
-			float left_target = forward_curved - turn_curved;
-			float right_target = forward_curved + turn_curved;
-
-			// Apply slew-rate limiting using LemLib's slew utility
-			previous_left_output = lemlib::slew(left_target, previous_left_output, MAX_SLEW_STEP);
-			previous_right_output = lemlib::slew(right_target, previous_right_output, MAX_SLEW_STEP);
-
-			left_mg.move(static_cast<int>(previous_left_output));
-			right_mg.move(static_cast<int>(previous_right_output));
+			chassis.arcade(
+				master.get_analog(pros::E_CONTROLLER_ANALOG_LEFT_Y),
+				master.get_analog(pros::E_CONTROLLER_ANALOG_RIGHT_X)
+			);
 		} else {
-			// Tank drive: apply curves independently to each side
-			int left_curved = throttleCurve.curve(left_y);
-			int right_curved = throttleCurve.curve(right_y);
-
-			// Apply slew-rate limiting
-			previous_left_output = lemlib::slew(left_curved, previous_left_output, MAX_SLEW_STEP);
-			previous_right_output = lemlib::slew(right_curved, previous_right_output, MAX_SLEW_STEP);
-
-			left_mg.move(static_cast<int>(previous_left_output));
-			right_mg.move(static_cast<int>(previous_right_output));
+			chassis.tank(
+				master.get_analog(pros::E_CONTROLLER_ANALOG_LEFT_Y),
+				master.get_analog(pros::E_CONTROLLER_ANALOG_RIGHT_Y)
+			);
 		}
 
 		// ====================
